@@ -54,7 +54,6 @@ message_ttl = 300       # 消息缓存秒数
 clean_interval = 120    # 缓存清理间隔
 
 [webhook_forward]
-enabled = false
 timeout = 5
 ```
 
