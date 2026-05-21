@@ -20,7 +20,7 @@ impl From<rusqlite::Error> for DbError {
 impl std::fmt::Display for DbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DbError::Sqlite(e) => write!(f, "SQLite error: {}", e),
+            DbError::Sqlite(e) => write!(f, "SQLite 错误: {}", e),
             DbError::Custom(s) => write!(f, "{}", s),
         }
     }
@@ -152,7 +152,7 @@ impl Database {
         resp_rx.recv().unwrap_or_default()
     }
 
-    // ── Accounts ──
+    // ── 账号 ──
 
     pub fn get_all_accounts(&self) -> Vec<Account> {
         self.query(|conn| {
@@ -260,7 +260,7 @@ impl Database {
         })
     }
 
-    // ── Webhook Targets ──
+    // ── Webhook 转发目标 ──
 
     pub fn get_webhook_urls(&self, appid: &str) -> Vec<String> {
         let appid = appid.to_string();
@@ -305,7 +305,7 @@ impl Database {
         })
     }
 
-    // ── Sessions ──
+    // ── 会话 ──
 
     pub fn get_all_sessions(&self) -> Vec<Session> {
         self.query(|conn| {
@@ -349,7 +349,7 @@ impl Database {
         });
     }
 
-    // ── IP Access ──
+    // ── IP 访问控制 ──
 
     pub fn get_ip_access(&self, ip: &str) -> Option<(String, bool)> {
         let ip = ip.to_string();
@@ -377,7 +377,7 @@ impl Database {
         });
     }
 
-    // ── Stats ──
+    // ── 统计 ──
 
     pub fn get_global_stats(&self) -> GlobalStats {
         self.query(|conn| {
@@ -446,7 +446,7 @@ impl Database {
         });
     }
 
-    // ── DB viewer ──
+    // ── 数据库查看器 ──
 
     pub fn query_table(&self, table: &str) -> Vec<serde_json::Value> {
         let table = table.to_string();

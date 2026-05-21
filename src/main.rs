@@ -35,11 +35,11 @@ async fn main() -> anyhow::Result<()> {
 
     info!("QQBot-Relay v{}", env!("CARGO_PKG_VERSION"));
 
-    // Database
+    // 数据库
     std::fs::create_dir_all("data")?;
     let db = Arc::new(Database::new("data/relay.db")?);
 
-    // Core services
+    // 核心服务
     let accounts = Arc::new(AccountManager::new(db.clone()));
     let cache = Arc::new(CacheManager::new(
         config.cache.max_public_messages,
@@ -62,9 +62,9 @@ async fn main() -> anyhow::Result<()> {
         connections: connections.clone(),
     });
 
-    // ── Background tasks ──
+    // ── 后台任务 ──
 
-    // Stats flush every N seconds
+    // 统计数据每 N 秒刷新一次
     let stats_bg = stats.clone();
     let flush_interval = config.read().stats.write_interval;
     tokio::spawn(async move {
@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Cache cleanup every N seconds
+    // 缓存每 N 秒清理一次
     let cache_bg = cache.clone();
     let clean_interval = config.read().cache.clean_interval;
     tokio::spawn(async move {
@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Session cleanup every hour
+    // 会话每小时清理一次
     let db_bg = db.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
@@ -96,13 +96,13 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Config hot-reload via filesystem watcher
+    // 通过文件系统监听器热重载配置
     let config_bg = config.clone();
     tokio::spawn(async move {
         watch_config("config.toml", config_bg).await;
     });
 
-    // Health monitor every 30 seconds
+    // 健康监控每 30 秒检查一次
     let connections_bg = connections.clone();
     let cache_bg2 = cache.clone();
     tokio::spawn(async move {
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // ── Routes ──
+    // ── 路由 ──
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -157,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(cors)
         .with_state(state);
 
-    // Serve embedded web dashboard with SPA fallback
+    // 提供嵌入式 Web 管理面板，支持 SPA 回退
     let web_router = axum::Router::new()
         .route("/", get(web::serve_web))
         .fallback(web::serve_web_rest);
@@ -165,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/web", get(|| async { axum::response::Redirect::permanent("/web/") }))
         .nest("/web/", web_router);
 
-    // ── Start server ──
+    // ── 启动服务器 ──
 
     let port = config.read().port;
     let addr = format!("0.0.0.0:{}", port);

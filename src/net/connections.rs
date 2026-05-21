@@ -188,7 +188,7 @@ impl ConnectionManager {
         let mut success = 0i64;
         let mut failure = 0i64;
 
-        // Collect connection IDs to avoid borrow issues
+        // 收集连接ID以避免借用问题
         let ids: Vec<usize> = self
             .conns
             .get(secret)
@@ -227,7 +227,7 @@ impl ConnectionManager {
         let (mut ws_tx, mut ws_rx) = ws.split();
         let id = self.next_id();
 
-        // Send HELLO
+        // 发送 HELLO
         if ws_tx.send(axum::extract::ws::Message::Text(HELLO_PAYLOAD.into())).await.is_err() {
             return;
         }
@@ -235,10 +235,10 @@ impl ConnectionManager {
         self.register(&secret, id, token.clone(), group, member, content);
         info!("WebSocket 已连接: 密钥='{}', id={}, token={:?}", secret, id, token);
 
-        // Subscribe to broadcast
+        // 订阅广播
         let mut rx = self.tx.subscribe();
 
-        // Cache resend after 3s delay
+        // 缓存重发（延迟3秒）
         let secret_clone = secret.clone();
         let cache_clone = cache.clone();
         let token_clone = token.clone();
@@ -247,7 +247,7 @@ impl ConnectionManager {
         let cache_resend_handle: JoinHandle<()> = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-            // Resend public cache
+            // 重发公共缓存
             let public_msgs = cache_clone.drain_public(&secret_clone);
             if !public_msgs.is_empty() {
                 info!("重发 {} 条公共缓存消息 '{}'", public_msgs.len(), secret_clone);
@@ -256,13 +256,13 @@ impl ConnectionManager {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                     for _msg in chunk {
-                        // Messages are broadcast via the channel
+                            // 消息通过通道广播
                         let _ = self_clone.tx.send((secret_clone.clone(), _msg.clone()));
                     }
                 }
             }
 
-            // Resend token cache
+            // 重发令牌缓存
             if let Some(ref t) = token_clone {
                 let token_msgs = cache_clone.drain_token(&secret_clone, t);
                 if !token_msgs.is_empty() {
@@ -279,7 +279,7 @@ impl ConnectionManager {
             }
         });
 
-        // Heartbeat task
+        // 心跳任务
         let secret_hb = secret.clone();
         let self_hb = self.clone();
         let heartbeat_handle: JoinHandle<()> = tokio::spawn(async move {
@@ -298,7 +298,7 @@ impl ConnectionManager {
             }
         });
 
-        // Forward broadcast messages to this WebSocket
+        // 转发广播消息到此 WebSocket
         let secret_fwd = secret.clone();
         let fwd_handle: JoinHandle<()> = tokio::spawn(async move {
             while let Ok((msg_secret, payload)) = rx.recv().await {
@@ -311,7 +311,7 @@ impl ConnectionManager {
             }
         });
 
-        // Receive loop
+        // 接收循环
         let idle_timeout = std::time::Duration::from_secs(90);
         loop {
             match tokio::time::timeout(idle_timeout, ws_rx.next()).await {
@@ -336,7 +336,7 @@ impl ConnectionManager {
             }
         }
 
-        // Cleanup
+        // 清理
         cache_resend_handle.abort();
         heartbeat_handle.abort();
         fwd_handle.abort();
@@ -347,11 +347,11 @@ impl ConnectionManager {
     fn handle_client_message(&self, data: &serde_json::Value, secret: &str) {
         if let Some(op) = data.get("op").and_then(|v| v.as_i64()) {
             match op {
-                1 => { /* heartbeat -> HB_ACK already sent by heartbeat task */ }
-                2 => { /* identify -> READY */
+                1 => { /* 心跳 -> HB_ACK 已由心跳任务发送 */ }
+                2 => { /* 身份识别 -> READY */
                     let _ = self.tx.send((secret.to_string(), READY_PAYLOAD.as_bytes().to_vec()));
                 }
-                6 => { /* resume -> RESUMED */
+                6 => { /* 恢复连接 -> RESUMED */
                     let _ = self.tx.send((secret.to_string(), RESUMED_PAYLOAD.as_bytes().to_vec()));
                 }
                 _ => {}

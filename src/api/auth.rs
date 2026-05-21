@@ -15,7 +15,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 const COOKIE_SECRET: &str = "QQBot-Relay-cookie-secret-change-me";
 const MAX_SESSIONS: usize = 10;
-const SESSION_MAX_AGE: u64 = 7 * 24 * 3600; // 7 days
+const SESSION_MAX_AGE: u64 = 7 * 24 * 3600; // 7 天
 
 fn sign_token(token: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(COOKIE_SECRET.as_bytes()).unwrap();
@@ -90,7 +90,7 @@ pub async fn login(
     }
 
     if password != state.config.read().admin.password {
-        // Record failure
+        // 记录失败
         let fail_times = state.db.get_ip_access(&ip)
             .map(|(s, _)| {
                 let mut v: Vec<f64> = serde_json::from_str(&s).unwrap_or_default();
@@ -111,7 +111,7 @@ pub async fn login(
             .into_response();
     }
 
-    // Create session
+    // 创建会话
     let token = Uuid::new_v4().to_string();
     let now = chrono::Utc::now();
     let expires = now + chrono::Duration::seconds(SESSION_MAX_AGE as i64);
@@ -129,7 +129,7 @@ pub async fn login(
         user_agent,
     });
 
-    // Reset IP fail count
+    // 重置 IP 失败计数
     state.db.update_ip_access(ip, "[]".into(), false, String::new());
 
     let signed = format!("{}.{}", token, sign_token(&token));
@@ -183,7 +183,7 @@ fn get_session_token(headers: &HeaderMap) -> Option<String> {
 
 pub fn extract_session(state: &AppState, headers: &HeaderMap) -> Option<String> {
     let token = get_session_token(headers)?;
-    // Check if session exists in DB
+    // 检查会话是否存在于数据库中
     let sessions = state.db.get_all_sessions();
     let now = chrono::Utc::now();
     for session in sessions {

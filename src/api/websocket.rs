@@ -20,7 +20,7 @@ pub struct WsQuery {
     pub nonce: Option<String>,
 }
 
-/// WS /ws/{secret}?token=...&group=...&member=...&content=...
+/// WebSocket /ws/{密钥}?token=...&group=...&member=...&content=...
 pub async fn ws_by_secret(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(secret): axum::extract::Path<String>,
@@ -35,7 +35,7 @@ pub async fn ws_by_secret(
     })
 }
 
-/// WS /api/ws/{appid}?token=...&group=...&member=...&content=...&signature=...&timestamp=...&nonce=...
+/// WebSocket /api/ws/{应用ID}?token=...&group=...&member=...&content=...&signature=...&timestamp=...&nonce=...
 pub async fn ws_by_appid(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(appid): axum::extract::Path<String>,
@@ -47,7 +47,7 @@ pub async fn ws_by_appid(
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // Verify HMAC-SHA256 signature if provided (no body for WebSocket)
+    // 如果提供了签名则验证 HMAC-SHA256（WebSocket 无请求体）
     if let (Some(sig), Some(ts), Some(nonce)) = (&query.signature, &query.timestamp, &query.nonce) {
         if !helpers::verify_signature(&secret, sig, ts, nonce, "") {
             return StatusCode::UNAUTHORIZED.into_response();

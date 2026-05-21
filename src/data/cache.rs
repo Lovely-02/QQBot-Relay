@@ -53,7 +53,7 @@ impl CacheManager {
         !self.no_cache_secrets.contains(&secret.to_string())
     }
 
-    // ── Deduplication ──
+    // ── 消息去重 ──
 
     pub fn is_duplicate(&self, msg_id: &str) -> bool {
         let now = now();
@@ -70,7 +70,7 @@ impl CacheManager {
         self.dedup.write().insert(msg_id.to_string(), expiry);
     }
 
-    // ── Public cache ──
+    // ── 公共缓存 ──
 
     pub fn add_public(&self, secret: &str, data: Vec<u8>) {
         let now = now();
@@ -104,7 +104,7 @@ impl CacheManager {
         }
     }
 
-    // ── Token cache ──
+    // ── 令牌缓存 ──
 
     pub fn add_token(&self, secret: &str, token: &str, data: Vec<u8>) {
         let now = now();
@@ -142,18 +142,18 @@ impl CacheManager {
         Vec::new()
     }
 
-    // ── Cleanup ──
+    // ── 清理 ──
 
     pub fn cleanup(&self) {
         let now = now();
 
-        // Clean dedup
+        // 清理去重缓存
         {
             let mut dedup = self.dedup.write();
             dedup.retain(|_, expiry| *expiry > now);
         }
 
-        // Clean message caches
+        // 清理消息缓存
         {
             let mut caches = self.caches.write();
             caches.retain(|_, entry| {

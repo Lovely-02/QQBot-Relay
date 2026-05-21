@@ -20,7 +20,7 @@ pub struct WebhookQuery {
     pub nonce: Option<String>,
 }
 
-/// POST /webhook?secret=xxx
+/// POST /webhook?secret=密钥
 #[axum::debug_handler]
 pub async fn handle_webhook(
     State(state): State<Arc<AppState>>,
@@ -35,7 +35,7 @@ pub async fn handle_webhook(
     process_webhook(&state, &secret, &body, None).await
 }
 
-/// POST /api/{appid}
+/// POST /api/{应用ID}
 #[axum::debug_handler]
 pub async fn handle_appid_webhook(
     State(state): State<Arc<AppState>>,
@@ -48,7 +48,7 @@ pub async fn handle_appid_webhook(
         None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "appid not found"}))).into_response(),
     };
 
-    // Verify HMAC-SHA256 signature if provided
+    // 如果提供了签名则验证 HMAC-SHA256
     if let (Some(sig), Some(ts), Some(nonce)) = (&query.signature, &query.timestamp, &query.nonce) {
         debug!("[Webhook验签] appid={}, signature={}, timestamp={}, nonce={}", appid, sig, ts, nonce);
         if !helpers::verify_signature(&secret, sig, ts, nonce, &body) {
@@ -68,13 +68,13 @@ async fn process_webhook(
 ) -> axum::response::Response {
     state.stats.increment_messages();
 
-    // Resolve appid from secret if not provided
+    // 如果未提供应用ID则从密钥解析
     let resolved_appid = match appid {
         Some(a) => Some(a.to_string()),
         None => state.db.get_appid_by_secret(secret),
     };
 
-    // Extract config values before any await (parking_lot guards are !Send)
+    // 在任何 await 之前提取配置值（parking_lot 守卫不是 Send）
     let (raw_enabled, raw_path) = {
         let config = state.config.read();
         (
@@ -83,7 +83,7 @@ async fn process_webhook(
         )
     };
 
-    // Optional raw content logging
+    // 可选的原始内容日志记录
     if raw_enabled {
         let _ = std::fs::create_dir_all(&raw_path);
         let file_path = format!("{}/webhook_{}.log", raw_path, chrono::Utc::now().format("%Y%m%d"));
@@ -98,7 +98,7 @@ async fn process_webhook(
             });
     }
 
-    // Parse JSON
+    // 解析 JSON
     let data: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(_) => {
@@ -106,7 +106,7 @@ async fn process_webhook(
         }
     };
 
-    // Deduplication
+    // 消息去重
     if let Some(msg_id) = data.get("id").and_then(|v| v.as_str()) {
         if state.cache.is_duplicate(msg_id) {
             debug!("重复消息已忽略: {}", msg_id);
@@ -115,7 +115,7 @@ async fn process_webhook(
         state.cache.add_msg_id(msg_id);
     }
 
-    // Ed25519 signature verification callback (QQ Bot platform handshake)
+    // Ed25519 签名验证回调（QQ 机器人平台握手）
     if let (Some(event_ts), Some(plain_token)) = (
         data.get("d").and_then(|d| d.get("event_ts")).and_then(|v| v.as_str()),
         data.get("d").and_then(|d| d.get("plain_token")).and_then(|v| v.as_str()),
@@ -130,7 +130,7 @@ async fn process_webhook(
         .into_response();
     }
 
-    // Secondary webhook forwarding
+    // 二级 Webhook 转发
     if let Some(ref fwd_appid) = resolved_appid {
         let urls = state.accounts.get_webhook_urls(fwd_appid);
         if !urls.is_empty() {
@@ -140,10 +140,10 @@ async fn process_webhook(
         }
     }
 
-    // Serialize payload for WebSocket relay
+    // 为 WebSocket 中继序列化载荷
     let payload = serde_json::to_vec(&data).unwrap_or_default();
 
-    // Send to WebSocket clients or cache
+    // 发送给 WebSocket 客户端或缓存
     state.connections.send_to_all(secret, &data, &payload, &state.stats, &state.cache).await;
 
     Json(serde_json::json!({"status": "success"})).into_response()
