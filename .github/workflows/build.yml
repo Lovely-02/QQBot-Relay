@@ -1,0 +1,115 @@
+name: 🚀 发布并推送发布分支
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+env:
+  APP_NAME: QQBot-Relay
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: 🧪 触发 release-please 发布检查
+        uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: [release-please]
+    if: ${{ needs.release-please.outputs.release_created }}
+    strategy:
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: .exe
+          - runner: windows-latest
+            target: aarch64-pc-windows-msvc
+            ext: .exe
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            ext: ''
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            ext: ''
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ''
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            ext: ''
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: 📂 检出仓库代码
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ⚙️ 设置 Rust 运行环境
+        uses: puniyu/setup-rust@193e89f6f2587e5ded12957d6b786ddffe3ccce1 # main
+        with:
+          target: ${{ matrix.target }}
+          cache: 'true'
+          prefix-key: ${{ env.APP_NAME }}
+
+      - name: 🛠️ 构建项目
+        run: cargo build --release --bin ${{ env.APP_NAME }} --target ${{ matrix.target }}
+
+      - name: 创建存档文件
+        uses: a7ul/tar-action@v1.2.0
+        with:
+          command: c
+          files: |
+            ./target/${{ matrix.target }}/release/${{ env.APP_NAME }}${{ matrix.ext }}
+            ./README.md
+            ./CHANGELOG.md
+          outPath: ${{ env.APP_NAME }}-${{ matrix.target }}.tar.gz
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: '${{ env.APP_NAME }}-${{ matrix.target }}'
+          path: ${{ env.APP_NAME }}-${{ matrix.target }}.tar.gz
+
+  release:
+    needs:
+      - release-please
+      - build
+    runs-on: ubuntu-latest
+    if: ${{ always() && needs.release-please.outputs.release_created }}
+    steps:
+      - name: 📂 检出仓库代码
+        uses: actions/checkout@v6
+
+      - name: 💾 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 📤 上传 Release 产物
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.release-please.outputs.tag_name }} \
+            artifacts/${{ env.APP_NAME }}-x86_64-pc-windows-msvc.tar.gz \
+            artifacts/${{ env.APP_NAME }}-aarch64-pc-windows-msvc.tar.gz \
+            artifacts/${{ env.APP_NAME }}-x86_64-apple-darwin.tar.gz \
+            artifacts/${{ env.APP_NAME }}-aarch64-apple-darwin.tar.gz \
+            artifacts/${{ env.APP_NAME }}-x86_64-unknown-linux-gnu.tar.gz \
+            artifacts/${{ env.APP_NAME }}-aarch64-unknown-linux-gnu.tar.gz \
+            --clobber
