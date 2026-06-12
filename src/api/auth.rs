@@ -23,6 +23,23 @@ fn sign_token(token: &str, password: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
+pub(crate) fn session_cookie(token: &str, password: &str, secure: bool) -> String {
+    let signed = format!("{}.{}", token, sign_token(token, password));
+    let secure = if secure { "; Secure" } else { "" };
+    format!(
+        "admin_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
+        signed, SESSION_MAX_AGE, secure
+    )
+}
+
+fn expired_session_cookie(secure: bool) -> String {
+    let secure = if secure { "; Secure" } else { "" };
+    format!(
+        "admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{}",
+        secure
+    )
+}
+
 fn verify_cookie(cookie_value: &str, password: &str) -> Option<String> {
     let parts: Vec<&str> = cookie_value.splitn(2, '.').collect();
     if parts.len() != 2 {
@@ -156,16 +173,8 @@ pub async fn login(
         .db
         .update_ip_access(ip, "[]".into(), false, String::new());
 
-    let signed = format!("{}.{}", token, sign_token(&token, &admin.password));
-    let secure = if state.config.read().ssl.ssl_certfile.is_empty() {
-        ""
-    } else {
-        "; Secure"
-    };
-    let cookie = format!(
-        "admin_session={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
-        signed, SESSION_MAX_AGE, secure
-    );
+    let secure = !state.config.read().ssl.ssl_certfile.is_empty();
+    let cookie = session_cookie(&token, &admin.password, secure);
 
     let mut response = Json(serde_json::json!({"status": "success"})).into_response();
     response
@@ -189,12 +198,11 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
     if let Some(token) = get_session_token(&state, &headers) {
         state.db.delete_session(&token);
     }
+    let secure = !state.config.read().ssl.ssl_certfile.is_empty();
     let mut response = Json(serde_json::json!({"status": "success"})).into_response();
     response.headers_mut().insert(
         "set-cookie",
-        "admin_session=; Path=/; HttpOnly; Max-Age=0"
-            .parse()
-            .unwrap(),
+        expired_session_cookie(secure).parse().unwrap(),
     );
     response
 }
@@ -244,5 +252,19 @@ mod tests {
             Some(token.to_string())
         );
         assert_eq!(verify_cookie(&cookie, "password-b"), None);
+    }
+
+    #[test]
+    fn session_cookie_uses_consistent_security_attributes() {
+        let cookie = session_cookie("session-token", "password", true);
+        assert!(cookie.contains("Path=/"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+        assert!(cookie.contains("Secure"));
+
+        let expired = expired_session_cookie(true);
+        assert!(expired.contains("Max-Age=0"));
+        assert!(expired.contains("SameSite=Lax"));
+        assert!(expired.contains("Secure"));
     }
 }

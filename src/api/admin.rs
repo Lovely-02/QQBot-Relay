@@ -152,15 +152,19 @@ pub async fn update_settings(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if require_auth(&state, &headers).is_err() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "unauthorized"})),
-        )
-            .into_response();
-    }
+    let session_token = match require_auth(&state, &headers) {
+        Ok(token) => token,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "unauthorized"})),
+            )
+                .into_response()
+        }
+    };
 
     let mut config = state.config.read().clone();
+    let old_password = config.admin.password.clone();
 
     if let Some(port) = body.get("port").and_then(|v| v.as_u64()) {
         let Ok(port) = u16::try_from(port) else {
@@ -256,9 +260,21 @@ pub async fn update_settings(
         config.deduplication_ttl,
         config.no_cache_secrets.clone(),
     );
+    let password_changed = config.admin.password != old_password;
+    let new_password = config.admin.password.clone();
+    let secure_cookie = !config.ssl.ssl_certfile.is_empty();
     *state.config.write() = config;
 
-    Json(serde_json::json!({"status": "updated"})).into_response()
+    let mut response = Json(serde_json::json!({"status": "updated"})).into_response();
+    if password_changed {
+        response.headers_mut().insert(
+            "set-cookie",
+            auth::session_cookie(&session_token, &new_password, secure_cookie)
+                .parse()
+                .unwrap(),
+        );
+    }
+    response
 }
 
 /// 获取所有 Webhook 转发目标

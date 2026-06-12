@@ -29,10 +29,10 @@ const router = createRouter({
 
 router.beforeEach(async (to, from, next) => {
 	const auth = useAuthStore()
-	if (to.meta.auth && !auth.isLoggedIn && !(await auth.checkAuth())) {
+	if (to.meta.auth && !(await auth.ensureAuth())) {
 		return next({ name: 'Login', query: { redirect: to.fullPath } })
 	}
-	if (to.meta.guest && auth.isLoggedIn && (await auth.checkAuth())) {
+	if (to.meta.guest && (await auth.ensureAuth())) {
 		return next({ name: 'Dashboard' })
 	}
 	next()

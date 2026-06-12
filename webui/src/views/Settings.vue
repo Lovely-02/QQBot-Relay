@@ -95,6 +95,7 @@
 					<n-input
 						v-model:value="form.admin_password"
 						type="password"
+						autocomplete="new-password"
 						show-password-on="click"
 						placeholder="留空表示不修改"
 						style="width: 260px"
