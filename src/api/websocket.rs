@@ -1,5 +1,5 @@
 use crate::core::AppState;
-use crate::net::connections::ConnectionManager;
+use crate::net::connections::{ConnectionManager, ConnectionOptions};
 use crate::util::helpers;
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
@@ -31,7 +31,19 @@ pub async fn ws_by_secret(
     let cache = state.cache.clone();
     let stats = state.stats.clone();
     ws.on_upgrade(move |socket| {
-        ConnectionManager::handle_connection(conns, secret, socket, cache, stats, query.token, query.group, query.member, query.content)
+        ConnectionManager::handle_connection(
+            conns,
+            secret,
+            socket,
+            cache,
+            stats,
+            ConnectionOptions {
+                token: query.token,
+                group: query.group,
+                member: query.member,
+                content: query.content,
+            },
+        )
     })
 }
 
@@ -47,17 +59,30 @@ pub async fn ws_by_appid(
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // 如果提供了签名则验证 HMAC-SHA256（WebSocket 无请求体）
-    if let (Some(sig), Some(ts), Some(nonce)) = (&query.signature, &query.timestamp, &query.nonce) {
-        if !helpers::verify_signature(&secret, sig, ts, nonce, "") {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
+    let (sig, ts, nonce) = match (&query.signature, &query.timestamp, &query.nonce) {
+        (Some(sig), Some(ts), Some(nonce)) => (sig, ts, nonce),
+        _ => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+    if !helpers::verify_signature(&secret, sig, ts, nonce, "") {
+        return StatusCode::UNAUTHORIZED.into_response();
     }
 
     let conns = state.connections.clone();
     let cache = state.cache.clone();
     let stats = state.stats.clone();
     ws.on_upgrade(move |socket| {
-        ConnectionManager::handle_connection(conns, secret, socket, cache, stats, query.token, query.group, query.member, query.content)
+        ConnectionManager::handle_connection(
+            conns,
+            secret,
+            socket,
+            cache,
+            stats,
+            ConnectionOptions {
+                token: query.token,
+                group: query.group,
+                member: query.member,
+                content: query.content,
+            },
+        )
     })
 }

@@ -7,7 +7,8 @@ static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"token=[^&\s]+")
 static KEY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"key=[^&\s]+").unwrap());
 static PASSWORD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"password=[^&\s]+").unwrap());
 static SK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"sk-[a-zA-Z0-9]{8,}").unwrap());
-static BEARER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Bearer\s+[a-zA-Z0-9._-]{8,}").unwrap());
+static BEARER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Bearer\s+[a-zA-Z0-9._-]{8,}").unwrap());
 
 pub fn sanitize_secret(s: &str) -> String {
     if s.len() <= 2 {

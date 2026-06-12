@@ -11,7 +11,7 @@ QQ Bot Webhook 到 WebSocket 的实时消息转发服务，基于 Rust + Axum �
 - **速率控制**：补发时延迟启动 + 限速（防止瞬时压力过大）
 - **失败熔断**：连续发送失败自动断开异常连接
 - **Webhook 转发**：支持将收到的 Webhook 二次转发到多个目标
-- **Ed25519 / SHA1 签名验证**：兼容 QQ 开放平台的握手与签名校验
+- **Ed25519 / HMAC-SHA256 签名验证**：兼容 QQ 开放平台握手，并保护 AppID 模式接口
 - **配置热重载**：修改 `config.toml` 后自动生效，无需重启
 - **内嵌 Web 面板**：`/web` 路径提供实时状态监控与管理功能
 - **HTTPS 支持**：内置 TLS（rustls），也可配合反向代理使用
@@ -20,7 +20,8 @@ QQ Bot Webhook 到 WebSocket 的实时消息转发服务，基于 Rust + Axum �
 
 ### 环境要求
 
-- Rust 1.70+
+- Rust 1.80+
+- Node.js 20+ 与 pnpm 10（用于构建内嵌 WebUI）
 - 公网可访问的服务器（用于接收 QQ 开放平台的 Webhook 推送）
 
 ### 编译与运行
@@ -30,7 +31,7 @@ cargo build --release
 ./target/release/QQBot-Relay
 ```
 
-首次运行会自动生成 `config.toml` 默认配置文件。
+首次运行会自动生成 `config.toml`，并在终端输出随机管理员初始密码。
 
 ### 配置
 
@@ -44,8 +45,9 @@ ssl_certfile = ""   # SSL 证书路径，留空则使用 HTTP
 ssl_keyfile = ""    # SSL 私钥路径
 
 [admin]
-password = "admin"  # Web 面板登录密码
+password = "首次启动时自动生成"
 enabled = true
+trust_proxy_headers = false # 仅在可信反向代理后开启
 
 [cache]
 max_public_messages = 1000
@@ -69,10 +71,13 @@ timeout = 5
 | 路径                       | 说明                         |
 | -------------------------- | ---------------------------- |
 | `POST /webhook?secret=xxx` | 接收 Webhook（密钥模式）     |
-| `POST /api/{appid}`        | 接收 Webhook（AppID 模式）   |
+| `POST /api/{appid}`        | 接收 Webhook（签名 AppID 模式） |
 | `GET /ws/{secret}`         | WebSocket 连接（密钥模式）   |
-| `GET /api/ws/{appid}`      | WebSocket 连接（AppID 模式） |
+| `GET /api/ws/{appid}`      | WebSocket 连接（签名 AppID 模式） |
 | `/web/`                    | 管理面板                     |
+
+AppID 模式要求同时提供 `signature`、`timestamp` 和 `nonce`。签名内容为
+`HMAC-SHA256(secret, timestamp + nonce + body)` 的十六进制字符串，时间戳与服务器时间偏差不能超过 5 分钟。QQ 平台首次 Ed25519 验证握手不要求该 HMAC。
 
 ## 关于 Issues
 

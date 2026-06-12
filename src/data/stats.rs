@@ -37,14 +37,21 @@ impl StatsManager {
         let global = db.get_global_stats();
         let per_secret_map = DashMap::new();
         for entry in db.get_all_per_secret_stats() {
-            per_secret_map.insert(entry.secret, SecretStats {
-                ws_success: AtomicI64::new(entry.ws_success),
-                ws_failure: AtomicI64::new(entry.ws_failure),
-                wh_success: AtomicI64::new(entry.wh_success),
-                wh_failure: AtomicI64::new(entry.wh_failure),
-            });
+            per_secret_map.insert(
+                entry.secret,
+                SecretStats {
+                    ws_success: AtomicI64::new(entry.ws_success),
+                    ws_failure: AtomicI64::new(entry.ws_failure),
+                    wh_success: AtomicI64::new(entry.wh_success),
+                    wh_failure: AtomicI64::new(entry.wh_failure),
+                },
+            );
         }
-        tracing::info!("已加载统计: {} 条消息, {} 个密钥", global.total_messages, per_secret_map.len());
+        tracing::info!(
+            "已加载统计: {} 条消息, {} 个密钥",
+            global.total_messages,
+            per_secret_map.len()
+        );
         Self {
             db,
             total_messages: AtomicI64::new(global.total_messages),
@@ -63,20 +70,36 @@ impl StatsManager {
     }
 
     pub fn update_ws_stats(&self, secret: &str, success: i64, failure: i64) {
-        if success > 0 { self.ws_success.fetch_add(success, Ordering::Relaxed); }
-        if failure > 0 { self.ws_failure.fetch_add(failure, Ordering::Relaxed); }
+        if success > 0 {
+            self.ws_success.fetch_add(success, Ordering::Relaxed);
+        }
+        if failure > 0 {
+            self.ws_failure.fetch_add(failure, Ordering::Relaxed);
+        }
         let entry = self.per_secret.entry(secret.to_string()).or_default();
-        if success > 0 { entry.ws_success.fetch_add(success, Ordering::Relaxed); }
-        if failure > 0 { entry.ws_failure.fetch_add(failure, Ordering::Relaxed); }
+        if success > 0 {
+            entry.ws_success.fetch_add(success, Ordering::Relaxed);
+        }
+        if failure > 0 {
+            entry.ws_failure.fetch_add(failure, Ordering::Relaxed);
+        }
         self.dirty.store(true, Ordering::Relaxed);
     }
 
     pub fn update_wh_stats(&self, secret: &str, success: i64, failure: i64) {
-        if success > 0 { self.wh_success.fetch_add(success, Ordering::Relaxed); }
-        if failure > 0 { self.wh_failure.fetch_add(failure, Ordering::Relaxed); }
+        if success > 0 {
+            self.wh_success.fetch_add(success, Ordering::Relaxed);
+        }
+        if failure > 0 {
+            self.wh_failure.fetch_add(failure, Ordering::Relaxed);
+        }
         let entry = self.per_secret.entry(secret.to_string()).or_default();
-        if success > 0 { entry.wh_success.fetch_add(success, Ordering::Relaxed); }
-        if failure > 0 { entry.wh_failure.fetch_add(failure, Ordering::Relaxed); }
+        if success > 0 {
+            entry.wh_success.fetch_add(success, Ordering::Relaxed);
+        }
+        if failure > 0 {
+            entry.wh_failure.fetch_add(failure, Ordering::Relaxed);
+        }
         self.dirty.store(true, Ordering::Relaxed);
     }
 
@@ -91,15 +114,19 @@ impl StatsManager {
             self.wh_success.load(Ordering::Relaxed),
             self.wh_failure.load(Ordering::Relaxed),
         );
-        let entries: Vec<_> = self.per_secret.iter().map(|entry| {
-            (
-                entry.key().clone(),
-                entry.value().ws_success.load(Ordering::Relaxed),
-                entry.value().ws_failure.load(Ordering::Relaxed),
-                entry.value().wh_success.load(Ordering::Relaxed),
-                entry.value().wh_failure.load(Ordering::Relaxed),
-            )
-        }).collect();
+        let entries: Vec<_> = self
+            .per_secret
+            .iter()
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    entry.value().ws_success.load(Ordering::Relaxed),
+                    entry.value().ws_failure.load(Ordering::Relaxed),
+                    entry.value().wh_success.load(Ordering::Relaxed),
+                    entry.value().wh_failure.load(Ordering::Relaxed),
+                )
+            })
+            .collect();
         if !entries.is_empty() {
             self.db.flush_per_secret_stats(entries);
         }

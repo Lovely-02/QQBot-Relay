@@ -19,7 +19,11 @@ pub async fn get_stats(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     let global = state.stats.get_global();
@@ -40,7 +44,11 @@ pub async fn get_appids(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
     Json(state.accounts.get_all()).into_response()
 }
@@ -52,21 +60,48 @@ pub async fn create_appid(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     let appid = match body.get("appid").and_then(|v| v.as_str()) {
-        Some(a) => a.to_string(),
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "missing appid"}))).into_response(),
+        Some(a) if !a.trim().is_empty() => a.trim().to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing appid"})),
+            )
+                .into_response()
+        }
     };
     let secret = match body.get("secret").and_then(|v| v.as_str()) {
-        Some(s) => s.to_string(),
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "missing secret"}))).into_response(),
+        Some(s) if s.len() >= 10 => s.to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing secret"})),
+            )
+                .into_response()
+        }
     };
-    let description = body.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let description = body
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    state.accounts.create(appid, secret, description);
-    Json(serde_json::json!({"status": "created"})).into_response()
+    if state.accounts.create(appid, secret, description) {
+        Json(serde_json::json!({"status": "created"})).into_response()
+    } else {
+        (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "appid already exists"})),
+        )
+            .into_response()
+    }
 }
 
 /// 删除指定账号
@@ -76,13 +111,21 @@ pub async fn delete_appid(
     axum::extract::Path(appid): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     if state.accounts.delete(&appid) {
         Json(serde_json::json!({"status": "deleted"})).into_response()
     } else {
-        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not found"}))).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response()
     }
 }
 
@@ -92,9 +135,14 @@ pub async fn get_settings(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
-    let config = state.config.read().clone();
+    let mut config = state.config.read().clone();
+    config.admin.password.clear();
     Json(serde_json::to_value(&config).unwrap_or_default()).into_response()
 }
 
@@ -105,13 +153,24 @@ pub async fn update_settings(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     let mut config = state.config.read().clone();
 
     if let Some(port) = body.get("port").and_then(|v| v.as_u64()) {
-        config.port = port as u16;
+        let Ok(port) = u16::try_from(port) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid port"})),
+            )
+                .into_response();
+        };
+        config.port = port;
     }
     if let Some(ttl) = body.get("deduplication_ttl").and_then(|v| v.as_u64()) {
         config.deduplication_ttl = ttl;
@@ -120,15 +179,25 @@ pub async fn update_settings(
         config.log_level = level.to_string();
     }
     if let Some(list) = body.get("no_cache_secrets").and_then(|v| v.as_array()) {
-        config.no_cache_secrets = list.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+        config.no_cache_secrets = list
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
     }
 
     if let Some(admin) = body.get("admin") {
-        if let Some(pwd) = admin.get("password").and_then(|v| v.as_str()) {
+        if let Some(pwd) = admin
+            .get("password")
+            .and_then(|v| v.as_str())
+            .filter(|value| !value.is_empty())
+        {
             config.admin.password = pwd.to_string();
         }
         if let Some(enabled) = admin.get("enabled").and_then(|v| v.as_bool()) {
             config.admin.enabled = enabled;
+        }
+        if let Some(enabled) = admin.get("trust_proxy_headers").and_then(|v| v.as_bool()) {
+            config.admin.trust_proxy_headers = enabled;
         }
     }
 
@@ -162,7 +231,31 @@ pub async fn update_settings(
         }
     }
 
+    let log_filter = match tracing_subscriber::EnvFilter::try_new(&config.log_level) {
+        Ok(filter) => filter,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("invalid log filter: {error}")})),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = state.log_reload.reload(log_filter) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("reload log filter failed: {error}")})),
+        )
+            .into_response();
+    }
     config.save();
+    state.cache.reconfigure(
+        config.cache.max_public_messages,
+        config.cache.max_token_messages,
+        config.cache.message_ttl,
+        config.deduplication_ttl,
+        config.no_cache_secrets.clone(),
+    );
     *state.config.write() = config;
 
     Json(serde_json::json!({"status": "updated"})).into_response()
@@ -174,13 +267,18 @@ pub async fn webhook_list(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     let all = state.db.get_all_webhook_targets();
-    let result: Vec<serde_json::Value> = all.into_iter().map(|(appid, url)| {
-        serde_json::json!({ "appid": appid, "url": url })
-    }).collect();
+    let result: Vec<serde_json::Value> = all
+        .into_iter()
+        .map(|(appid, url)| serde_json::json!({ "appid": appid, "url": url }))
+        .collect();
     Json(result).into_response()
 }
 
@@ -191,17 +289,51 @@ pub async fn webhook_add(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     let appid = match body.get("appid").and_then(|v| v.as_str()) {
         Some(a) => a,
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "missing appid"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing appid"})),
+            )
+                .into_response()
+        }
     };
     let url = match body.get("url").and_then(|v| v.as_str()) {
         Some(u) => u,
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "missing url"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing url"})),
+            )
+                .into_response()
+        }
     };
+    if state.accounts.get(appid).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "appid not found"})),
+        )
+            .into_response();
+    }
+    let valid_url = match reqwest::Url::parse(url) {
+        Ok(parsed) => matches!(parsed.scheme(), "http" | "https"),
+        Err(_) => false,
+    };
+    if !valid_url {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid webhook url"})),
+        )
+            .into_response();
+    }
 
     // 检查是否已存在（去重由数据库主键处理）
     let existing = state.accounts.get_webhook_urls(appid);
@@ -220,7 +352,11 @@ pub async fn webhook_remove(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     let appid = body.get("appid").and_then(|v| v.as_str()).unwrap_or("");
@@ -236,13 +372,34 @@ pub async fn db_tables(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).is_err() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
-    let tables = vec!["accounts", "sessions", "ip_access", "stats_global", "stats_per_secret", "webhook_targets"];
+    let tables = vec![
+        "accounts",
+        "sessions",
+        "ip_access",
+        "stats_global",
+        "stats_per_secret",
+        "webhook_targets",
+    ];
     let mut result = Vec::new();
     for table in tables {
-        let rows = state.db.query_table(table);
+        let mut rows = state.db.query_table(table);
+        for row in &mut rows {
+            let Some(object) = row.as_object_mut() else {
+                continue;
+            };
+            for key in ["secret", "token", "password_fail_times"] {
+                if object.contains_key(key) {
+                    object.insert(key.to_string(), serde_json::Value::String("***".into()));
+                }
+            }
+        }
         result.push(serde_json::json!({
             "table": table,
             "row_count": rows.len(),

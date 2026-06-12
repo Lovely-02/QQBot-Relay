@@ -17,20 +17,23 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{
+    layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter, Registry,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(&config.log_level)),
-        )
-        .with_timer(tracing_subscriber::fmt::time::ChronoLocal::new("%Y/%m/%d %H:%M:%S".to_string()))
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+    let (filter_layer, log_reload) = reload::Layer::new(filter);
+    Registry::default()
+        .with(filter_layer)
+        .with(tracing_subscriber::fmt::layer().with_timer(
+            tracing_subscriber::fmt::time::ChronoLocal::new("%Y/%m/%d %H:%M:%S".to_string()),
+        ))
         .init();
 
     info!("QQBot-Relay v{}", env!("CARGO_PKG_VERSION"));
@@ -60,28 +63,29 @@ async fn main() -> anyhow::Result<()> {
         cache: cache.clone(),
         stats: stats.clone(),
         connections: connections.clone(),
+        log_reload: log_reload.clone(),
     });
 
     // ── 后台任务 ──
 
     // 统计数据每 N 秒刷新一次
     let stats_bg = stats.clone();
-    let flush_interval = config.read().stats.write_interval;
+    let stats_config = config.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(flush_interval));
         loop {
-            interval.tick().await;
+            let seconds = stats_config.read().stats.write_interval.max(1);
+            tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
             stats_bg.flush_to_db();
         }
     });
 
     // 缓存每 N 秒清理一次
     let cache_bg = cache.clone();
-    let clean_interval = config.read().cache.clean_interval;
+    let cache_config = config.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(clean_interval));
         loop {
-            interval.tick().await;
+            let seconds = cache_config.read().cache.clean_interval.max(1);
+            tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
             cache_bg.cleanup();
         }
     });
@@ -98,33 +102,13 @@ async fn main() -> anyhow::Result<()> {
 
     // 通过文件系统监听器热重载配置
     let config_bg = config.clone();
+    let cache_config_bg = cache.clone();
+    let log_reload_bg = log_reload.clone();
     tokio::spawn(async move {
-        watch_config("config.toml", config_bg).await;
-    });
-
-    // 健康监控每 30 秒检查一次
-    let connections_bg = connections.clone();
-    let cache_bg2 = cache.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        let mut error_count = 0i64;
-        loop {
-            interval.tick().await;
-            let total = connections_bg.total_connections();
-            if total == 0 && error_count > 10 {
-                tracing::warn!("自动恢复: 清除缓存 (无连接, {} 次错误)", error_count);
-                cache_bg2.cleanup();
-                error_count = 0;
-            }
-        }
+        watch_config("config.toml", config_bg, cache_config_bg, log_reload_bg).await;
     });
 
     // ── 路由 ──
-
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
 
     let admin_routes = Router::new()
         .route("/stats", get(api::admin::get_stats))
@@ -148,13 +132,17 @@ async fn main() -> anyhow::Result<()> {
         .nest("/admin", auth_routes);
 
     let app = Router::new()
-        .route("/", get(|| async { axum::response::Json(serde_json::json!({"message": "Webhook", "status": "ok"})) }))
+        .route(
+            "/",
+            get(|| async {
+                axum::response::Json(serde_json::json!({"message": "Webhook", "status": "ok"}))
+            }),
+        )
         .route("/webhook", post(api::webhook::handle_webhook))
         .route("/api/:appid", post(api::webhook::handle_appid_webhook))
         .route("/ws/:secret", get(api::websocket::ws_by_secret))
         .route("/api/ws/:appid", get(api::websocket::ws_by_appid))
         .nest("/api", api_routes)
-        .layer(cors)
         .with_state(state);
 
     // 提供嵌入式 Web 管理面板，支持 SPA 回退
@@ -162,7 +150,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(web::serve_web))
         .fallback(web::serve_web_rest);
     let app = app
-        .route("/web", get(|| async { axum::response::Redirect::permanent("/web/") }))
+        .route(
+            "/web",
+            get(|| async { axum::response::Redirect::permanent("/web/") }),
+        )
         .nest("/web/", web_router);
 
     // ── 启动服务器 ──
@@ -179,19 +170,30 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
         axum_server::bind_rustls(addr.parse()?, tls_config)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await?;
     } else {
         info!("HTTP 服务启动于 {}", addr);
         let listener = tokio::net::TcpListener::bind(&addr).await?;
-        axum::serve(listener, app).await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await?;
     }
 
     Ok(())
 }
 
-async fn watch_config(path: &str, config: Arc<parking_lot::RwLock<AppConfig>>) {
-    use notify::{Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+async fn watch_config(
+    path: &str,
+    config: Arc<parking_lot::RwLock<AppConfig>>,
+    cache: Arc<CacheManager>,
+    log_reload: crate::core::LogReloadHandle,
+) {
+    use notify::{
+        Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+    };
     use std::time::{Duration, Instant};
     use tokio::sync::mpsc;
 
@@ -212,18 +214,27 @@ async fn watch_config(path: &str, config: Arc<parking_lot::RwLock<AppConfig>>) {
         }
     };
 
-    if let Err(e) = watcher.watch(path.as_ref(), RecursiveMode::NonRecursive) {
+    let watch_root = std::path::Path::new(path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if let Err(e) = watcher.watch(watch_root, RecursiveMode::NonRecursive) {
         tracing::error!("监听 {} 失败: {}", path, e);
         return;
     }
 
     info!("正在监听 {} 文件变更", path);
 
-    let mut last_event = Instant::now();
     let debounce = Duration::from_millis(300);
+    let mut last_event = Instant::now() - debounce;
 
     while let Some(event) = rx.recv().await {
-        if !matches!(event.kind, EventKind::Modify(_)) {
+        if !matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+            || !event
+                .paths
+                .iter()
+                .any(|event_path| event_path.ends_with(path))
+        {
             continue;
         }
         let now = Instant::now();
@@ -237,6 +248,24 @@ async fn watch_config(path: &str, config: Arc<parking_lot::RwLock<AppConfig>>) {
         match std::fs::read_to_string(path) {
             Ok(content) => match toml::from_str::<AppConfig>(&content) {
                 Ok(new_config) => {
+                    match EnvFilter::try_new(&new_config.log_level) {
+                        Ok(filter) => {
+                            if let Err(error) = log_reload.reload(filter) {
+                                tracing::warn!("重载日志级别失败: {}", error);
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!("日志过滤器无效: {}", error);
+                            continue;
+                        }
+                    }
+                    cache.reconfigure(
+                        new_config.cache.max_public_messages,
+                        new_config.cache.max_token_messages,
+                        new_config.cache.message_ttl,
+                        new_config.deduplication_ttl,
+                        new_config.no_cache_secrets.clone(),
+                    );
                     *config.write() = new_config;
                     info!("已热重载 {}", path);
                 }

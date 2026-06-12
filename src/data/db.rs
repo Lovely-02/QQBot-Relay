@@ -14,7 +14,9 @@ pub enum DbError {
 }
 
 impl From<rusqlite::Error> for DbError {
-    fn from(e: rusqlite::Error) -> Self { DbError::Sqlite(e) }
+    fn from(e: rusqlite::Error) -> Self {
+        DbError::Sqlite(e)
+    }
 }
 
 impl std::fmt::Display for DbError {
@@ -127,7 +129,7 @@ impl Database {
                 appid TEXT NOT NULL,
                 url TEXT NOT NULL,
                 PRIMARY KEY(appid, url)
-            );"
+            );",
         )?;
         Ok(())
     }
@@ -136,13 +138,15 @@ impl Database {
     where
         F: FnOnce(&mut Connection) + Send + 'static,
     {
-        let _ = self.tx.send(DbRequest { callback: Box::new(f) });
+        let _ = self.tx.send(DbRequest {
+            callback: Box::new(f),
+        });
     }
 
-    fn query<T: Send + 'static, F>(&self, f: F) -> T
+    fn query<T, F>(&self, f: F) -> T
     where
         F: FnOnce(&mut Connection) -> T + Send + 'static,
-        T: Default,
+        T: Default + Send + 'static,
     {
         let (resp_tx, resp_rx) = std::sync::mpsc::channel();
         self.send(move |conn| {
@@ -203,7 +207,15 @@ impl Database {
     pub fn delete_account(&self, appid: &str) {
         let appid = appid.to_string();
         self.send(move |conn| {
-            let _ = conn.execute("DELETE FROM accounts WHERE appid = ?1", params![appid]);
+            if let Ok(transaction) = conn.transaction() {
+                let _ = transaction.execute(
+                    "DELETE FROM webhook_targets WHERE appid = ?1",
+                    params![&appid],
+                );
+                let _ =
+                    transaction.execute("DELETE FROM accounts WHERE appid = ?1", params![&appid]);
+                let _ = transaction.commit();
+            }
         });
     }
 
@@ -219,7 +231,14 @@ impl Database {
         })
     }
 
-    pub fn verify_appid_signature(&self, appid: &str, signature: &str, timestamp: &str, nonce: &str, body: &str) -> bool {
+    pub fn verify_appid_signature(
+        &self,
+        appid: &str,
+        signature: &str,
+        timestamp: &str,
+        nonce: &str,
+        body: &str,
+    ) -> bool {
         let appid = appid.to_string();
         let signature = signature.to_string();
         let timestamp = timestamp.to_string();
@@ -265,9 +284,9 @@ impl Database {
     pub fn get_webhook_urls(&self, appid: &str) -> Vec<String> {
         let appid = appid.to_string();
         self.query(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT url FROM webhook_targets WHERE appid = ?1"
-            ).unwrap();
+            let mut stmt = conn
+                .prepare("SELECT url FROM webhook_targets WHERE appid = ?1")
+                .unwrap();
             stmt.query_map(params![appid], |row| row.get::<_, String>(0))
                 .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
                 .unwrap_or_default()
@@ -296,12 +315,14 @@ impl Database {
 
     pub fn get_all_webhook_targets(&self) -> Vec<(String, String)> {
         self.query(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT appid, url FROM webhook_targets"
-            ).unwrap();
-            stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
-                .unwrap_or_default()
+            let mut stmt = conn
+                .prepare("SELECT appid, url FROM webhook_targets")
+                .unwrap();
+            stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+            .unwrap_or_default()
         })
     }
 
@@ -331,6 +352,38 @@ impl Database {
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO sessions (token, created, expires, ip, user_agent) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![session.token, session.created, session.expires, session.ip, session.user_agent],
+            );
+        });
+    }
+
+    pub fn get_session(&self, token: &str) -> Option<Session> {
+        let token = token.to_string();
+        self.query(move |conn| {
+            conn.query_row(
+                "SELECT token, created, expires, ip, user_agent FROM sessions WHERE token = ?1",
+                params![token],
+                |row| {
+                    Ok(Session {
+                        token: row.get(0)?,
+                        created: row.get(1)?,
+                        expires: row.get(2)?,
+                        ip: row.get(3)?,
+                        user_agent: row.get(4)?,
+                    })
+                },
+            )
+            .ok()
+        })
+    }
+
+    pub fn limit_sessions(&self, max_sessions: usize) {
+        self.send(move |conn| {
+            let _ = conn.execute(
+                "DELETE FROM sessions
+                 WHERE token NOT IN (
+                     SELECT token FROM sessions ORDER BY created DESC LIMIT ?1
+                 )",
+                params![max_sessions as i64],
             );
         });
     }
@@ -367,7 +420,13 @@ impl Database {
         })
     }
 
-    pub fn update_ip_access(&self, ip: String, fail_times: String, is_banned: bool, ban_time: String) {
+    pub fn update_ip_access(
+        &self,
+        ip: String,
+        fail_times: String,
+        is_banned: bool,
+        ban_time: String,
+    ) {
         self.send(move |conn| {
             let now = chrono::Utc::now().to_rfc3339();
             let _ = conn.execute(
@@ -418,7 +477,14 @@ impl Database {
         })
     }
 
-    pub fn flush_global_stats(&self, total: i64, ws_ok: i64, ws_fail: i64, wh_ok: i64, wh_fail: i64) {
+    pub fn flush_global_stats(
+        &self,
+        total: i64,
+        ws_ok: i64,
+        ws_fail: i64,
+        wh_ok: i64,
+        wh_fail: i64,
+    ) {
         self.send(move |conn| {
             for (key, val) in [
                 ("total_messages", total),
@@ -451,7 +517,14 @@ impl Database {
     pub fn query_table(&self, table: &str) -> Vec<serde_json::Value> {
         let table = table.to_string();
         self.query(move |conn| {
-            let allowed = ["accounts", "sessions", "ip_access", "stats_global", "stats_per_secret", "webhook_targets"];
+            let allowed = [
+                "accounts",
+                "sessions",
+                "ip_access",
+                "stats_global",
+                "stats_per_secret",
+                "webhook_targets",
+            ];
             if !allowed.contains(&table.as_str()) {
                 return Vec::new();
             }
@@ -464,24 +537,49 @@ impl Database {
             let rows = stmt.query_map([], |row| {
                 let mut map = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
-                    let val: serde_json::Value = row.get_ref(i).ok().and_then(|v| match v {
-                        rusqlite::types::ValueRef::Null => Some(serde_json::Value::Null),
-                        rusqlite::types::ValueRef::Integer(i) => Some(serde_json::Value::Number(i.into())),
-                        rusqlite::types::ValueRef::Real(f) => {
-                            serde_json::Number::from_f64(f).map(serde_json::Value::Number)
-                        }
-                        rusqlite::types::ValueRef::Text(t) => {
-                            Some(serde_json::Value::String(String::from_utf8_lossy(t).into()))
-                        }
-                        rusqlite::types::ValueRef::Blob(b) => {
-                            Some(serde_json::Value::String(hex::encode(b)))
-                        }
-                    }).unwrap_or(serde_json::Value::Null);
+                    let val: serde_json::Value = row
+                        .get_ref(i)
+                        .ok()
+                        .and_then(|v| match v {
+                            rusqlite::types::ValueRef::Null => Some(serde_json::Value::Null),
+                            rusqlite::types::ValueRef::Integer(i) => {
+                                Some(serde_json::Value::Number(i.into()))
+                            }
+                            rusqlite::types::ValueRef::Real(f) => {
+                                serde_json::Number::from_f64(f).map(serde_json::Value::Number)
+                            }
+                            rusqlite::types::ValueRef::Text(t) => {
+                                Some(serde_json::Value::String(String::from_utf8_lossy(t).into()))
+                            }
+                            rusqlite::types::ValueRef::Blob(b) => {
+                                Some(serde_json::Value::String(hex::encode(b)))
+                            }
+                        })
+                        .unwrap_or(serde_json::Value::Null);
                     map.insert(col.clone(), val);
                 }
                 Ok(serde_json::Value::Object(map))
             });
-            rows.and_then(|r| r.collect::<Result<Vec<_>, _>>()).unwrap_or_default()
+            rows.and_then(|r| r.collect::<Result<Vec<_>, _>>())
+                .unwrap_or_default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleting_account_removes_webhook_targets() {
+        let db = Database::new(":memory:").unwrap();
+        db.create_account("app".into(), "secret-value".into(), String::new());
+        db.add_webhook_target("app".into(), "https://example.com/hook".into());
+        assert_eq!(db.get_webhook_urls("app").len(), 1);
+
+        db.delete_account("app");
+
+        assert!(db.get_account("app").is_none());
+        assert!(db.get_webhook_urls("app").is_empty());
     }
 }

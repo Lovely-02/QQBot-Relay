@@ -13,7 +13,15 @@ export default defineConfig({
     }
   },
   build: {
-    outDir: 'dist',
-    emptyOutDir: true
+    outDir: '../src/webui',
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vue: ['vue', 'vue-router', 'pinia'],
+          naive: ['naive-ui']
+        }
+      }
+    }
   }
 })

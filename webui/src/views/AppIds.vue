@@ -10,11 +10,11 @@
 	const form = ref({ appid: '', secret: '', description: '' })
 
 	function getCallbackUrl(item) {
-		return `${location.origin}/api/${item.appid}`
+		return `${location.origin}/webhook?secret=${encodeURIComponent(item.secret)}`
 	}
 	function getWsUrl(item) {
 		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-		return `${proto}//${location.host}/api/ws/${item.appid}`
+		return `${proto}//${location.host}/ws/${encodeURIComponent(item.secret)}`
 	}
 	function copy(text, label) {
 		navigator.clipboard.writeText(text).then(

@@ -25,15 +25,27 @@ pub struct ConnInfo {
     pub last_activity: AtomicI64,
 }
 
-type WsSender = futures_util::stream::SplitSink<
-    axum::extract::ws::WebSocket,
-    axum::extract::ws::Message,
->;
+type WsSender =
+    futures_util::stream::SplitSink<axum::extract::ws::WebSocket, axum::extract::ws::Message>;
 
 pub struct ConnectionManager {
-    pub tx: broadcast::Sender<(String, Vec<u8>)>,
+    tx: broadcast::Sender<OutboundMessage>,
     conns: DashMap<String, DashMap<usize, ConnInfo>>,
     next_id: AtomicI64,
+}
+
+#[derive(Clone)]
+struct OutboundMessage {
+    secret: String,
+    target: Option<usize>,
+    payload: Vec<u8>,
+}
+
+pub struct ConnectionOptions {
+    pub token: Option<String>,
+    pub group: Option<String>,
+    pub member: Option<String>,
+    pub content: Option<String>,
 }
 
 fn now_ts() -> i64 {
@@ -85,7 +97,7 @@ impl ConnectionManager {
         };
         self.conns
             .entry(secret.to_string())
-            .or_insert_with(DashMap::new)
+            .or_default()
             .insert(id, info);
     }
 
@@ -100,10 +112,7 @@ impl ConnectionManager {
     }
 
     pub fn connection_count(&self, secret: &str) -> usize {
-        self.conns
-            .get(secret)
-            .map(|entry| entry.len())
-            .unwrap_or(0)
+        self.conns.get(secret).map(|entry| entry.len()).unwrap_or(0)
     }
 
     pub fn total_connections(&self) -> usize {
@@ -126,7 +135,8 @@ impl ConnectionManager {
                         return true;
                     }
                     if let Some(ref group) = info.group {
-                        if data.get("group_openid").and_then(|v| v.as_str()) != Some(group.as_str()) {
+                        if data.get("group_openid").and_then(|v| v.as_str()) != Some(group.as_str())
+                        {
                             return false;
                         }
                     }
@@ -140,7 +150,8 @@ impl ConnectionManager {
                         }
                     }
                     if let Some(ref content_filter) = info.content {
-                        let msg_content = data.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        let msg_content =
+                            data.get("content").and_then(|v| v.as_str()).unwrap_or("");
                         if !msg_content.contains(content_filter.as_str()) {
                             return false;
                         }
@@ -155,9 +166,9 @@ impl ConnectionManager {
         self.conns
             .get(secret)
             .and_then(|entry| {
-                entry.get(&id).map(|info| {
-                    info.failure_count.fetch_add(1, Ordering::Relaxed) + 1 >= 5
-                })
+                entry
+                    .get(&id)
+                    .map(|info| info.failure_count.fetch_add(1, Ordering::Relaxed) + 1 >= 5)
             })
             .unwrap_or(false)
     }
@@ -178,7 +189,13 @@ impl ConnectionManager {
         stats: &StatsManager,
         cache: &CacheManager,
     ) {
-        if !self.has_connections(secret) {
+        let ids: Vec<usize> = self
+            .conns
+            .get(secret)
+            .map(|entry| entry.iter().map(|item| *item.key()).collect())
+            .unwrap_or_default();
+
+        if ids.is_empty() {
             if cache.should_cache(secret) {
                 cache.add_public(secret, payload.to_vec());
             }
@@ -186,31 +203,27 @@ impl ConnectionManager {
         }
 
         let mut success = 0i64;
-        let mut failure = 0i64;
-
-        // 收集连接ID以避免借用问题
-        let ids: Vec<usize> = self
-            .conns
-            .get(secret)
-            .map(|entry| entry.iter().map(|r| *r.key()).collect())
-            .unwrap_or_default();
 
         for id in ids {
             if !self.check_sandbox(secret, id, data) {
                 continue;
             }
-            if self.tx.send((secret.to_string(), payload.to_vec())).is_ok() {
+            if self.send_to(secret, id, payload.to_vec()) {
                 success += 1;
-            } else {
-                failure += 1;
-                if self.record_failure(secret, id) {
-                    warn!("连接 {} (密钥 '{}') 超过失败上限, 已断开", id, secret);
-                    self.unregister(secret, id);
-                }
             }
         }
 
-        stats.update_ws_stats(secret, success, failure);
+        stats.update_ws_stats(secret, success, 0);
+    }
+
+    fn send_to(&self, secret: &str, id: usize, payload: Vec<u8>) -> bool {
+        self.tx
+            .send(OutboundMessage {
+                secret: secret.to_string(),
+                target: Some(id),
+                payload,
+            })
+            .is_ok()
     }
 
     pub async fn handle_connection(
@@ -218,22 +231,30 @@ impl ConnectionManager {
         secret: String,
         ws: axum::extract::ws::WebSocket,
         cache: Arc<CacheManager>,
-        _stats: Arc<StatsManager>,
-        token: Option<String>,
-        group: Option<String>,
-        member: Option<String>,
-        content: Option<String>,
+        stats: Arc<StatsManager>,
+        options: ConnectionOptions,
     ) {
         let (mut ws_tx, mut ws_rx) = ws.split();
         let id = self.next_id();
 
         // 发送 HELLO
-        if ws_tx.send(axum::extract::ws::Message::Text(HELLO_PAYLOAD.into())).await.is_err() {
+        if ws_tx
+            .send(axum::extract::ws::Message::Text(HELLO_PAYLOAD.into()))
+            .await
+            .is_err()
+        {
             return;
         }
 
-        self.register(&secret, id, token.clone(), group, member, content);
-        info!("WebSocket 已连接: 密钥='{}', id={}, token={:?}", secret, id, token);
+        self.register(
+            &secret,
+            id,
+            options.token.clone(),
+            options.group,
+            options.member,
+            options.content,
+        );
+        info!("WebSocket 已连接: id={}", id);
 
         // 订阅广播
         let mut rx = self.tx.subscribe();
@@ -241,7 +262,7 @@ impl ConnectionManager {
         // 缓存重发（延迟3秒）
         let secret_clone = secret.clone();
         let cache_clone = cache.clone();
-        let token_clone = token.clone();
+        let token_clone = options.token.clone();
         let self_clone = self.clone();
 
         let cache_resend_handle: JoinHandle<()> = tokio::spawn(async move {
@@ -250,14 +271,17 @@ impl ConnectionManager {
             // 重发公共缓存
             let public_msgs = cache_clone.drain_public(&secret_clone);
             if !public_msgs.is_empty() {
-                info!("重发 {} 条公共缓存消息 '{}'", public_msgs.len(), secret_clone);
+                info!(
+                    "重发 {} 条公共缓存消息 '{}'",
+                    public_msgs.len(),
+                    secret_clone
+                );
                 for (i, chunk) in public_msgs.chunks(10).enumerate() {
                     if i > 0 {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
-                    for _msg in chunk {
-                            // 消息通过通道广播
-                        let _ = self_clone.tx.send((secret_clone.clone(), _msg.clone()));
+                    for message in chunk {
+                        let _ = self_clone.send_to(&secret_clone, id, message.clone());
                     }
                 }
             }
@@ -266,13 +290,17 @@ impl ConnectionManager {
             if let Some(ref t) = token_clone {
                 let token_msgs = cache_clone.drain_token(&secret_clone, t);
                 if !token_msgs.is_empty() {
-                    info!("重发 {} 条令牌缓存消息 '{}'", token_msgs.len(), secret_clone);
+                    info!(
+                        "重发 {} 条令牌缓存消息 '{}'",
+                        token_msgs.len(),
+                        secret_clone
+                    );
                     for (i, chunk) in token_msgs.chunks(10).enumerate() {
                         if i > 0 {
                             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         }
-                        for _msg in chunk {
-                            let _ = self_clone.tx.send((secret_clone.clone(), _msg.clone()));
+                        for message in chunk {
+                            let _ = self_clone.send_to(&secret_clone, id, message.clone());
                         }
                     }
                 }
@@ -287,7 +315,7 @@ impl ConnectionManager {
             let mut failures = 0i64;
             loop {
                 interval.tick().await;
-                if self_hb.tx.send((secret_hb.clone(), HB_ACK.as_bytes().to_vec())).is_err() {
+                if !self_hb.send_to(&secret_hb, id, HB_ACK.as_bytes().to_vec()) {
                     failures += 1;
                     if failures >= 3 {
                         break;
@@ -300,12 +328,24 @@ impl ConnectionManager {
 
         // 转发广播消息到此 WebSocket
         let secret_fwd = secret.clone();
+        let token_fwd = options.token.clone();
+        let cache_fwd = cache.clone();
         let fwd_handle: JoinHandle<()> = tokio::spawn(async move {
-            while let Ok((msg_secret, payload)) = rx.recv().await {
-                if msg_secret != secret_fwd {
+            while let Ok(message) = rx.recv().await {
+                if message.secret != secret_fwd || message.target.is_some_and(|target| target != id)
+                {
                     continue;
                 }
-                if ws_tx.send(axum::extract::ws::Message::Binary(payload)).await.is_err() {
+                let payload = message.payload;
+                if ws_tx
+                    .send(axum::extract::ws::Message::Binary(payload.clone()))
+                    .await
+                    .is_err()
+                {
+                    if let Some(token) = &token_fwd {
+                        cache_fwd.add_token(&secret_fwd, token, payload);
+                    }
+                    stats.update_ws_stats(&secret_fwd, 0, 1);
                     break;
                 }
             }
@@ -320,7 +360,7 @@ impl ConnectionManager {
                     match msg {
                         axum::extract::ws::Message::Text(text) => {
                             if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                self.handle_client_message(&data, &secret);
+                                self.handle_client_message(&data, &secret, id);
                             }
                         }
                         axum::extract::ws::Message::Close(_) => break,
@@ -330,7 +370,7 @@ impl ConnectionManager {
                 Ok(Some(Err(_))) => break,
                 Ok(None) => break,
                 Err(_) => {
-                    warn!("WebSocket {} ('{}') 空闲超时", id, secret);
+                    warn!("WebSocket {} 空闲超时", id);
                     break;
                 }
             }
@@ -341,18 +381,20 @@ impl ConnectionManager {
         heartbeat_handle.abort();
         fwd_handle.abort();
         self.unregister(&secret, id);
-        info!("WebSocket 已断开: 密钥='{}', id={}", secret, id);
+        info!("WebSocket 已断开: id={}", id);
     }
 
-    fn handle_client_message(&self, data: &serde_json::Value, secret: &str) {
+    fn handle_client_message(&self, data: &serde_json::Value, secret: &str, id: usize) {
         if let Some(op) = data.get("op").and_then(|v| v.as_i64()) {
             match op {
-                1 => { /* 心跳 -> HB_ACK 已由心跳任务发送 */ }
-                2 => { /* 身份识别 -> READY */
-                    let _ = self.tx.send((secret.to_string(), READY_PAYLOAD.as_bytes().to_vec()));
+                1 => {
+                    let _ = self.send_to(secret, id, HB_ACK.as_bytes().to_vec());
                 }
-                6 => { /* 恢复连接 -> RESUMED */
-                    let _ = self.tx.send((secret.to_string(), RESUMED_PAYLOAD.as_bytes().to_vec()));
+                2 => {
+                    let _ = self.send_to(secret, id, READY_PAYLOAD.as_bytes().to_vec());
+                }
+                6 => {
+                    let _ = self.send_to(secret, id, RESUMED_PAYLOAD.as_bytes().to_vec());
                 }
                 _ => {}
             }
@@ -364,7 +406,7 @@ impl ConnectionManager {
         urls: &[String],
         appid: &str,
         body: &serde_json::Value,
-        _timeout: u64,
+        timeout: u64,
         stats: Arc<StatsManager>,
     ) {
         if urls.is_empty() {
@@ -375,7 +417,7 @@ impl ConnectionManager {
         let client = reqwest::Client::new();
         let max_retry = 180u64;
         let retry_interval = std::time::Duration::from_secs(1);
-        let push_timeout = std::time::Duration::from_secs(10);
+        let push_timeout = std::time::Duration::from_secs(timeout.max(1));
 
         for url in urls {
             let url = url.clone();
@@ -402,7 +444,10 @@ impl ConnectionManager {
                             let duration = start.elapsed().unwrap_or_default();
                             tracing::debug!(
                                 "Webhook 转发成功: {} -> {} ({}ms, {} 次尝试)",
-                                secret, url, duration.as_millis(), attempts
+                                secret,
+                                url,
+                                duration.as_millis(),
+                                attempts
                             );
                             stats_clone.update_wh_stats(&secret, 1, 0);
                             break;
@@ -411,7 +456,9 @@ impl ConnectionManager {
                             if start.elapsed().unwrap_or_default().as_secs() >= max_retry {
                                 tracing::warn!(
                                     "Webhook 转发失败 ({}s): {} -> {}",
-                                    max_retry, secret, url
+                                    max_retry,
+                                    secret,
+                                    url
                                 );
                                 stats_clone.update_wh_stats(&secret, 0, 1);
                                 break;

@@ -1,12 +1,15 @@
 pub mod config;
 
+use crate::core::config::AppConfig;
 use crate::data::accounts::AccountManager;
 use crate::data::cache::CacheManager;
 use crate::data::db::Database;
 use crate::data::stats::StatsManager;
 use crate::net::connections::ConnectionManager;
-use crate::core::config::AppConfig;
 use std::sync::Arc;
+use tracing_subscriber::{reload, EnvFilter, Registry};
+
+pub type LogReloadHandle = reload::Handle<EnvFilter, Registry>;
 
 pub struct AppState {
     pub db: Arc<Database>,
@@ -15,4 +18,5 @@ pub struct AppState {
     pub cache: Arc<CacheManager>,
     pub stats: Arc<StatsManager>,
     pub connections: Arc<ConnectionManager>,
+    pub log_reload: LogReloadHandle,
 }

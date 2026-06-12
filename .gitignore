@@ -2,7 +2,6 @@
 .claude/settings.local.json
 /data
 /logs
-web/dist
-web/package-lock.json
-web/node_modules
 config.toml
+webui/node_modules
+src/webui

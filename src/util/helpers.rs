@@ -15,7 +15,21 @@ pub fn generate_ed25519_signature(bot_secret: &[u8], event_ts: &str, plain_token
 
 /// 验证 Webhook 请求的 HMAC-SHA256 签名。
 /// 计算 hmac-sha256(secret, timestamp + nonce + body) 并与提供的签名进行比较。
-pub fn verify_signature(secret: &str, signature: &str, timestamp: &str, nonce: &str, body: &str) -> bool {
+pub fn verify_signature(
+    secret: &str,
+    signature: &str,
+    timestamp: &str,
+    nonce: &str,
+    body: &str,
+) -> bool {
+    let timestamp_value = match timestamp.parse::<i64>() {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    if (chrono::Utc::now().timestamp() - timestamp_value).abs() > 300 {
+        return false;
+    }
+
     let mut mac = match Hmac::<Sha256>::new_from_slice(secret.as_bytes()) {
         Ok(m) => m,
         Err(_) => return false,
@@ -23,10 +37,37 @@ pub fn verify_signature(secret: &str, signature: &str, timestamp: &str, nonce: &
     mac.update(timestamp.as_bytes());
     mac.update(nonce.as_bytes());
     mac.update(body.as_bytes());
-    let computed = hex::encode(mac.finalize().into_bytes());
-    tracing::debug!(
-        "[签名验证] secret={}, timestamp={}, nonce={}, body_len={}, received={}, computed={}, match={}",
-        secret, timestamp, nonce, body.len(), signature, computed, computed == signature
-    );
-    computed == signature
+    let provided = match hex::decode(signature) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    mac.verify_slice(&provided).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hmac_signature_rejects_stale_timestamps() {
+        let timestamp = (chrono::Utc::now().timestamp() - 301).to_string();
+        assert!(!verify_signature("secret", "00", &timestamp, "nonce", "{}"));
+    }
+
+    #[test]
+    fn hmac_signature_accepts_current_timestamp() {
+        let secret = "secret";
+        let timestamp = chrono::Utc::now().timestamp().to_string();
+        let nonce = "nonce";
+        let body = "{}";
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(timestamp.as_bytes());
+        mac.update(nonce.as_bytes());
+        mac.update(body.as_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        assert!(verify_signature(
+            secret, &signature, &timestamp, nonce, body
+        ));
+    }
 }

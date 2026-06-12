@@ -38,6 +38,8 @@ pub struct AdminConfig {
     pub password: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub trust_proxy_headers: bool,
 }
 
 impl Default for AdminConfig {
@@ -45,6 +47,7 @@ impl Default for AdminConfig {
         Self {
             password: default_admin_password(),
             enabled: true,
+            trust_proxy_headers: false,
         }
     }
 }
@@ -108,17 +111,39 @@ impl Default for WebhookForwardConfig {
     }
 }
 
-fn default_port() -> u16 { 8000 }
-fn default_log_level() -> String { "info".into() }
-fn default_admin_password() -> String { "admin".into() }
-fn default_true() -> bool { true }
-fn default_max_public() -> usize { 1000 }
-fn default_max_token() -> usize { 500 }
-fn default_message_ttl() -> u64 { 300 }
-fn default_clean_interval() -> u64 { 120 }
-fn default_stats_interval() -> u64 { 5 }
-fn default_raw_path() -> String { "logs".into() }
-fn default_forward_timeout() -> u64 { 5 }
+fn default_port() -> u16 {
+    8000
+}
+fn default_log_level() -> String {
+    "info".into()
+}
+fn default_admin_password() -> String {
+    String::new()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_max_public() -> usize {
+    1000
+}
+fn default_max_token() -> usize {
+    500
+}
+fn default_message_ttl() -> u64 {
+    300
+}
+fn default_clean_interval() -> u64 {
+    120
+}
+fn default_stats_interval() -> u64 {
+    5
+}
+fn default_raw_path() -> String {
+    "logs".into()
+}
+fn default_forward_timeout() -> u64 {
+    5
+}
 
 const CONFIG_PATH: &str = "config.toml";
 
@@ -127,7 +152,8 @@ impl AppConfig {
         if Path::new(CONFIG_PATH).exists() {
             match std::fs::read_to_string(CONFIG_PATH) {
                 Ok(content) => match toml::from_str::<AppConfig>(&content) {
-                    Ok(config) => {
+                    Ok(mut config) => {
+                        config.ensure_secure_admin_password();
                         info!("已加载配置文件 {}", CONFIG_PATH);
                         return config;
                     }
@@ -136,7 +162,8 @@ impl AppConfig {
                 Err(e) => tracing::warn!("读取 config.toml 失败: {}, 使用默认配置", e),
             }
         }
-        let config = AppConfig::default();
+        let mut config = AppConfig::default();
+        config.ensure_secure_admin_password();
         config.save();
         info!("已创建默认 config.toml");
         config
@@ -145,6 +172,23 @@ impl AppConfig {
     pub fn save(&self) {
         if let Ok(content) = toml::to_string_pretty(self) {
             let _ = std::fs::write(CONFIG_PATH, content);
+        }
+    }
+
+    fn ensure_secure_admin_password(&mut self) {
+        if self.admin.password.is_empty() || self.admin.password == "admin" {
+            use rand::{distributions::Alphanumeric, Rng};
+
+            self.admin.password = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(24)
+                .map(char::from)
+                .collect();
+            self.save();
+            eprintln!(
+                "管理员密码为空或不安全，已生成一次性初始密码: {}",
+                self.admin.password
+            );
         }
     }
 }

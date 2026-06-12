@@ -6,7 +6,7 @@ use axum::{
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
-#[folder = "src/web/"]
+#[folder = "src/webui"]
 struct WebAssets;
 
 fn content_type(path: &str) -> &'static str {

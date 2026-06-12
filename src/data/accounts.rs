@@ -23,7 +23,11 @@ impl AccountManager {
         }
         let target_count: usize = webhook_targets.values().map(|v| v.len()).sum();
 
-        tracing::info!("已从数据库加载 {} 个账号, {} 个转发目标", count, target_count);
+        tracing::info!(
+            "已从数据库加载 {} 个账号, {} 个转发目标",
+            count,
+            target_count
+        );
         Self {
             db,
             cache: RwLock::new(cache),
@@ -43,37 +47,63 @@ impl AccountManager {
         self.cache.read().get(appid).map(|a| a.secret.clone())
     }
 
-    pub fn create(&self, appid: String, secret: String, description: String) {
+    pub fn create(&self, appid: String, secret: String, description: String) -> bool {
+        if self.cache.read().contains_key(&appid) {
+            return false;
+        }
         let account = Account {
             appid: appid.clone(),
             secret,
             description,
             create_time: chrono::Utc::now().timestamp() as f64,
         };
-        self.db.create_account(account.appid.clone(), account.secret.clone(), account.description.clone());
+        self.db.create_account(
+            account.appid.clone(),
+            account.secret.clone(),
+            account.description.clone(),
+        );
         self.cache.write().insert(appid, account);
+        true
     }
 
     pub fn delete(&self, appid: &str) -> bool {
         if self.cache.write().remove(appid).is_some() {
             self.db.delete_account(appid);
+            self.webhook_targets.write().remove(appid);
             true
         } else {
             false
         }
     }
 
-    pub fn verify_signature(&self, appid: &str, signature: &str, timestamp: &str, nonce: &str, body: &str) -> bool {
-        self.db.verify_appid_signature(appid, signature, timestamp, nonce, body)
+    pub fn verify_signature(
+        &self,
+        appid: &str,
+        signature: &str,
+        timestamp: &str,
+        nonce: &str,
+        body: &str,
+    ) -> bool {
+        self.db
+            .verify_appid_signature(appid, signature, timestamp, nonce, body)
     }
 
     pub fn get_webhook_urls(&self, appid: &str) -> Vec<String> {
-        self.webhook_targets.read().get(appid).cloned().unwrap_or_default()
+        self.webhook_targets
+            .read()
+            .get(appid)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn add_webhook_target(&self, appid: &str, url: &str) {
-        self.db.add_webhook_target(appid.to_string(), url.to_string());
-        self.webhook_targets.write().entry(appid.to_string()).or_default().push(url.to_string());
+        self.db
+            .add_webhook_target(appid.to_string(), url.to_string());
+        self.webhook_targets
+            .write()
+            .entry(appid.to_string())
+            .or_default()
+            .push(url.to_string());
     }
 
     pub fn remove_webhook_target(&self, appid: &str, url: &str) {
